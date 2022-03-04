@@ -178,7 +178,7 @@ class TargetApiClient(object):
     def get_oauth_authorize_url(self, scopes=OAUTH_ADS_SCOPES, state=None):
         if not state:
             state = md5(str(random())).hexdigest()
-        url =  '%s?response_type=code&client_id=%s&state=%s&scope=%s' % (
+        url = '%s?response_type=code&client_id=%s&state=%s&scope=%s' % (
             self.OAUTH_USER_URL,
             self.client_id,
             state,
