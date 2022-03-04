@@ -12,7 +12,7 @@ class TargetApiError(Exception):
         self.http_status = http_status
 
     def __str__(self):
-        return '%s (http status %s)' % (self.message, self.http_status)
+        return "{} (http status {})".format(self.message, self.http_status)
 
 
 class TargetValidationError(TargetApiError):
@@ -21,9 +21,9 @@ class TargetValidationError(TargetApiError):
         self.fields = fields
 
     def __str__(self):
-        return 'Validation failed on:\n  %s' % (
-            '\n  '.join(
-                '#%s: %s' % (f, e) for f, e in self.fields.items()
+        return "Validation failed on:\n {}".format(
+            "\n  ".join(
+                "#{}: {}".format(f, e) for f, e in self.fields.items()
             )
         )
 
@@ -35,7 +35,7 @@ class TargetAuthError(TargetApiError):
         self.http_status = 401
 
     def __str__(self):
-        return '%s (http status %s) %s' % (
+        return "{} (http status {}) {}".format(
             self.message,
             self.http_status,
             self.oauth_message,
@@ -68,7 +68,7 @@ class TargetApiClient(object):
         self.client_id = client_id
         self.client_secret = client_secret
         self.host = self.SANDBOX_HOST if is_sandbox else self.PRODUCTION_HOST
-        self.url = 'https://%s/api/' % self.host
+        self.url = 'https://{}/api/'.format(self.host)
 
     def request(self, resource, access_token, data=None, params=None,
                 files=None, http_method=None):
