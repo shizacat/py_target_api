@@ -2,8 +2,13 @@ from datetime import datetime, timedelta
 from hashlib import md5
 from json import dumps
 from random import random
+from typing import Callable, List, Tuple, Optional
 
 import requests
+from requests_oauthlib import OAuth2Session
+from oauthlib.oauth2 import (
+    BackendApplicationClient, InvalidGrantError, TokenExpiredError
+)
 
 
 class TargetApiError(Exception):
@@ -48,60 +53,104 @@ class TargetApiClient(object):
 
     OAUTH_TOKEN_URL = 'v2/oauth2/token.json'
     OAUTH_USER_URL = '/oauth2/authorize'
-    GRANT_CLIENT = 'client_credentials'
-    GRANT_AGENCY_CLIENT = 'agency_client_credentials'
-    GRANT_RERFESH = 'refresh_token'
-    GRANT_AUTH_CODE = 'authorization_code'
-    OAUTH_ADS_SCOPES = ('read_ads', 'read_payments', 'create_ads')
-    OAUTH_AGENCY_SCOPES = (
-        'create_clients', 'read_clients', 'create_agency_payments'
-    )
-    OAUTH_MANAGER_SCOPES = (
-        'read_manager_clients', 'edit_manager_clients', 'read_payments'
-    )
+    # GRANT_CLIENT = 'client_credentials'
+    # GRANT_AGENCY_CLIENT = 'agency_client_credentials'
+    # GRANT_RERFESH = 'refresh_token'
+    # GRANT_AUTH_CODE = 'authorization_code'
+    # OAUTH_ADS_SCOPES = ('read_ads', 'read_payments', 'create_ads')
+    # OAUTH_AGENCY_SCOPES = (
+    #     'create_clients', 'read_clients', 'create_agency_payments'
+    # )
+    # OAUTH_MANAGER_SCOPES = (
+    #     'read_manager_clients', 'edit_manager_clients', 'read_payments'
+    # )
 
-    client_id = None
-    client_secret = None
-    url = None
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        token: dict = None,
+        is_sandbox: bool = True,
+        token_updater: Callable[[dict], None] = None,
+    ):
+        """
+        Args:
+            token - access_token and token_type
+                    Example: {"access_token": "", "token_type": "Bearer"}
+        """
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._token = token
+        self._token_updater_clb = token_updater
+        self._timeout = 20  # second
 
-    def __init__(self, client_id, client_secret, is_sandbox=True):
-        self.client_id = client_id
-        self.client_secret = client_secret
         self.host = self.SANDBOX_HOST if is_sandbox else self.PRODUCTION_HOST
         self.url = 'https://{}/api/'.format(self.host)
 
-    def request(self, resource, access_token, data=None, params=None,
-                files=None, http_method=None):
+        # Setup
+        self._session = OAuth2Session(
+            client=BackendApplicationClient(client_id=self._client_id),
+            auto_refresh_url=self.url_token,
+            auto_refresh_kwargs={
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            },
+            token_updater=self._token_updater,
+            token=self._token
+        )
+
+    @property
+    def url_token(self) -> str:
+        return "{}{}".format(self.url, self.OAUTH_TOKEN_URL)
+
+    def _token_updater(self, token: dict):
+        self._token = token
+        if self._token_updater_clb is not None:
+            self._token_updater_clb(token)
+
+    def _request(
+        self,
+        resource: str,
+        method: str,
+        **kwargs
+    ) -> requests.Response:
         """
         Performs HTTP request to Target API.
         """
+        response = self._session.request(
+            method,
+            self._get_url_resource(resource),
+            timeout=self._timeout,
+            **kwargs
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 204:
+            return True
+        self._process_error(response)
+    
+    def _get_url_resource(self, resource: str) -> str:
+        """Create URL for resource"""
         resource = resource.lstrip('/')
         if not resource.startswith('v'):
             resource = 'v1/' + resource
-        url = self.url + resource
+        return "{}{}".format(self.url, resource) 
 
-        req = {
-            'headers': {'Authorization': 'Bearer ' + access_token},
-            'params': params,
-        }
-        if data is not None:
-            if http_method is None:
-                http_method = 'post'
-            req['data'] = dumps(data)
-            req['headers']['Content-Type'] = 'application/json'
-        if files:
-            if http_method is None:
-                http_method = 'post'
-            req['files'] = files
+    def get_token(self):
+        """Get token"""
+        try:
+            token = self._session.fetch_token(
+                token_url=self.url_token,
+                # client_id=self._client_id,
+                include_client_id=True,
+                client_secret=self._client_secret,
+            )
+        except InvalidGrantError:
+            raise
+        self._token_updater(token)
 
-        resp = getattr(requests, http_method or 'get')(url, **req)
-        if resp.status_code == 200:
-            return resp.json()
-        elif resp.status_code == 204:
-            return True
-        self._process_error(resp)
-
-    def get_ok_lead(self, form_id: str, access_token, **kwargs):
+    def get_ok_lead(self, form_id: str, **kwargs):
         """
         Args:
             limit - Количество возвращаемых в ответе лидов. Значение по умолчанию: 20. Максимальное значение: 50.
@@ -115,15 +164,14 @@ class TargetApiClient(object):
             _banner_id__in - Список идентификаторов баннеров, для которых нужно получить лиды. Идентификаторы задаются в формате «id_1,id_2,…,id_N».
             _banner_id - Идентификатор баннера, для которого нужно получить лиды. Идентификатор задается в формате «id_1».
         """
-        resp = self.request(
+        resp = self._request(
+            method="get",
             resource="v2/ok/lead_ads/{}.json".format(form_id),
-            access_token=access_token,
             params=kwargs,
-            http_method="get"
         )
         return resp
 
-    def _process_error(self, resp):
+    def _process_error(self, resp: requests.Response):
         body = resp.json()
         if resp.status_code == 400:
             raise TargetValidationError(body)
@@ -131,57 +179,57 @@ class TargetApiClient(object):
             raise TargetAuthError(body, resp.headers.get('WWW-Authenticate'))
         raise TargetApiError(body, resp.status_code)
 
-    def _request_oauth_token(self, scheme=GRANT_CLIENT, **extra):
-        params = {
-            'grant_type': scheme,
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-        }
-        if extra:
-            params.update(extra)
+    # def _request_oauth_token(self, scheme=GRANT_CLIENT, **extra):
+    #     params = {
+    #         'grant_type': scheme,
+    #         'client_id': self.client_id,
+    #         'client_secret': self.client_secret,
+    #     }
+    #     if extra:
+    #         params.update(extra)
 
-        resp = requests.post(self.url + self.OAUTH_TOKEN_URL, data=params)
+    #     resp = requests.post(self.url + self.OAUTH_TOKEN_URL, data=params)
 
-        if resp.status_code == 200:
-            return resp.json()
-        self._process_error(resp)
+    #     if resp.status_code == 200:
+    #         return resp.json()
+    #     self._process_error(resp)
 
-    def refresh_access_token(self, refresh_token):
-        return self._request_oauth_token(
-            self.GRANT_RERFESH,
-            refresh_token=refresh_token,
-        )
+    # def refresh_access_token(self, refresh_token):
+    #     return self._request_oauth_token(
+    #         self.GRANT_RERFESH,
+    #         refresh_token=refresh_token,
+    #     )
 
-    def request_client_token(self):
-        return self._request_oauth_token()
+    # def request_client_token(self):
+    #     return self._request_oauth_token()
 
-    def token_delete(self, username: str = None):
-        params = {
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-        }
-        if username is not None:
-            params["username"] = username
+    # def token_delete(self, username: str = None):
+    #     params = {
+    #         'client_id': self.client_id,
+    #         'client_secret': self.client_secret,
+    #     }
+    #     if username is not None:
+    #         params["username"] = username
 
-        resp = requests.post(
-            self.url + "v2/oauth2/token/delete.json",
-            data=params
-        )
+    #     resp = requests.post(
+    #         self.url + "v2/oauth2/token/delete.json",
+    #         data=params
+    #     )
 
-        if resp.status_code == 204:
-            return True
-        self._process_error(resp)
+    #     if resp.status_code == 204:
+    #         return True
+    #     self._process_error(resp)
 
-    def request_app_user_token(self, code):
-        return self._request_oauth_token(self.GRANT_AUTH_CODE, code=code)
+    # def request_app_user_token(self, code):
+    #     return self._request_oauth_token(self.GRANT_AUTH_CODE, code=code)
 
-    def get_oauth_authorize_url(self, scopes=OAUTH_ADS_SCOPES, state=None):
-        if not state:
-            state = md5(str(random())).hexdigest()
-        url = '%s?response_type=code&client_id=%s&state=%s&scope=%s' % (
-            self.OAUTH_USER_URL,
-            self.client_id,
-            state,
-            scopes,
-        )
-        return {'state': state, 'url': url}
+    # def get_oauth_authorize_url(self, scopes=OAUTH_ADS_SCOPES, state=None):
+    #     if not state:
+    #         state = md5(str(random())).hexdigest()
+    #     url = '%s?response_type=code&client_id=%s&state=%s&scope=%s' % (
+    #         self.OAUTH_USER_URL,
+    #         self.client_id,
+    #         state,
+    #         scopes,
+    #     )
+    #     return {'state': state, 'url': url}
