@@ -67,7 +67,7 @@ class TargetApiClient(object):
         client_id: str,
         client_secret: str,
         token: dict = None,
-        is_sandbox: bool = True,
+        is_sandbox: bool = False,
         token_updater: Callable[[dict], None] = None,
         agency_client_name: str = None,
         agency_client_id: str = None,
